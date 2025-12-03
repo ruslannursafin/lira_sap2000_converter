@@ -64,6 +64,9 @@
       ''
     ];
 
+    // Храним последний результат, чтобы не терять большие модели
+    let lastS2K = '';
+
     function setStatus(msg) {
       document.getElementById('status').textContent = msg || '';
     }
@@ -662,7 +665,13 @@
         if (!inputText.trim()) { setStatus('Пустой входной текст'); return; }
         const model = parseLiraTxt(inputText);
         const s2k = buildS2K(model);
-        document.getElementById('output').value = s2k;
+        lastS2K = s2k;
+        const sizeMb = s2k.length / 1e6;
+        if (s2k.length > 5_000_000) {
+          document.getElementById('output').value = 'Результат слишком большой для показа (' + sizeMb.toFixed(1) + ' MB). Используйте кнопку "Скачать .s2k".';
+        } else {
+          document.getElementById('output').value = s2k;
+        }
         setStatus('Готово: узлов ' + model.nodes.length + ', стержней ' + model.frames.length + ', пластин ' + model.areas.length + '. Нагрузки перенесены эвристически (узлы, стержни, пластины).');
       } catch (err) {
         console.error(err);
@@ -694,8 +703,8 @@
     };
 
     document.getElementById('downloadBtn').onclick = () => {
-      const txt = document.getElementById('output').value;
-      if (!txt.trim()) { setStatus('Нет данных для сохранения'); return; }
+      const txt = lastS2K || document.getElementById('output').value;
+      if (!txt || !txt.trim()) { setStatus('Нет данных для сохранения'); return; }
       const blob = new Blob([txt], { type: 'text/plain' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
