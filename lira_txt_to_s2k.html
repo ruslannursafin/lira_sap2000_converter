@@ -68,6 +68,18 @@
       document.getElementById('status').textContent = msg || '';
     }
 
+    function translit(str) {
+      const map = {
+        а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y',
+        к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
+        х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+        А: 'A', Б: 'B', В: 'V', Г: 'G', Д: 'D', Е: 'E', Ё: 'E', Ж: 'Zh', З: 'Z', И: 'I', Й: 'Y',
+        К: 'K', Л: 'L', М: 'M', Н: 'N', О: 'O', П: 'P', Р: 'R', С: 'S', Т: 'T', У: 'U', Ф: 'F',
+        Х: 'H', Ц: 'C', Ч: 'Ch', Ш: 'Sh', Щ: 'Sch', Ъ: '', Ы: 'Y', Ь: '', Э: 'E', Ю: 'Yu', Я: 'Ya'
+      };
+      return str.split('').map(ch => map[ch] ?? ch).join('');
+    }
+
     // Без экспоненциальной записи для SAP2000
     function fmtNum(v, digits = 6) {
       if (!Number.isFinite(v)) return '0';
@@ -105,12 +117,14 @@
         const m = line.match(/^(\d+)\s*:\s*([^;]+);/);
         if (!m) return;
         const id = parseInt(m[1], 10);
-        let name = (m[2] || '').trim();
-        name = name.replace(/^\d+\s*\.\s*/, '');
-        name = name.replace(/[^A-Za-z0-9_]+/g, '');
-        if (!name || !/[A-Za-z]/.test(name)) return; // пропускаем безбуквенные имена
+        let rawName = (m[2] || '').trim();
+        rawName = rawName.replace(/^\d+\s*\.\s*/, '');
+        const translitName = translit(rawName);
+        const cleaned = translitName.replace(/[^A-Za-z0-9_]+/g, '');
+        if (!cleaned || !/[A-Za-z]/.test(cleaned)) return; // пропускаем чисто цифровые/пустые
+        const name = cleaned;
         map[id] = name;
-        const isDead = /dead/i.test(name);
+        const isDead = /dead/i.test(translitName) || /nagruzka|ves|sdead/i.test(translitName);
         patterns.push({ id, name, type: isDead ? 'Dead' : 'Other', selfWt: isDead ? 1 : 0 });
       });
       return { patterns, map };
@@ -169,10 +183,11 @@
         if (t === 10 && nums.length >= 4) {
           const id = nums.length >= 5 ? Math.trunc(nums[4]) : frames.length + 1;
           frames.push({ id, i: Math.trunc(nums[2]), j: Math.trunc(nums[3]) });
-        } else if (t === 44 && nums.length >= 6) {
+        } else if ((t === 44 && nums.length >= 6) || (t === 42 && nums.length >= 5)) {
           const id = Math.trunc(nums[nums.length - 1]);
-          const js = nums.slice(2, 6).map(n => Math.trunc(n));
-          if (js.length >= 3) areas.push({ id, joints: js });
+          const jointCount = t === 44 ? 4 : 3;
+          const js = nums.slice(2, 2 + jointCount).map(n => Math.trunc(n));
+          if (js.length >= 3) areas.push({ id, origId: id, joints: js });
         }
       });
 
@@ -221,7 +236,7 @@
         });
       });
 
-      const matInfo = {};
+      const materialDefs = [];
       const frameProps = {};
       const areaProps = {};
       (sections['Rigid'] || []).forEach(line => {
@@ -233,9 +248,13 @@
         const code = Math.trunc(tokens[0]);
         const subtype = Math.trunc(tokens[1] || 0);
         if (code === 1 && subtype === 1 && tokens.length >= 5) {
-          matInfo.rho = tokens[2];
-          matInfo.E = tokens[3];
-          matInfo.nu = tokens[4];
+          const def = {
+            ids,
+            rho: tokens[2],
+            E: tokens[3],
+            nu: tokens[4]
+          };
+          materialDefs.push(def);
         } else if (code === 2 && subtype === 2 && tokens.length >= 5) {
           // tokens: 2 2 0 b h  ; в исходном txt первым идет высота (по т2), потом ширина (по т3)
           const h = tokens[3] / 100; // высота, м
@@ -247,15 +266,27 @@
         }
       });
 
-      const material = {
-        name: 'MAT1',
-        type: 'Concrete',
-        // ЛИРА: вес (тс/м3), E (тс/м2), nu. Переводим в kN и метры.
-        unitWeight: (matInfo.rho ? matInfo.rho * 9.81 : 25),
-        E: (matInfo.E ? matInfo.E * 9.81 : 3e7),
-        nu: (matInfo.nu ?? 0.2)
+      const materials = [];
+      materialDefs.forEach((def, idx) => {
+        const name = 'MAT' + (idx + 1);
+        def.name = name;
+        materials.push({
+          name,
+          type: 'Concrete',
+          unitWeight: (def.rho ? def.rho * 9.81 : 25),
+          E: (def.E ? def.E * 9.81 : 3e7),
+          nu: (def.nu ?? 0.2)
+        });
+      });
+      if (!materials.length) {
+        materials.push({ name: 'MAT1', type: 'Concrete', unitWeight: 25, E: 3e7, nu: 0.2 });
+      }
+      const findMatName = (id) => {
+        for (const def of materialDefs) {
+          if (def.ids.includes(id)) return def.name;
+        }
+        return materials[0].name;
       };
-      const materials = [material];
 
       const frameSections = [];
       const frameSecMap = new Map();
@@ -263,15 +294,17 @@
         const prop = frameProps[f.id] || {};
         const b = prop.b ?? 0.5;
         const h = prop.h ?? 0.5;
-        const key = b + '|' + h;
+        const matName = findMatName(f.id);
+        const key = matName + '|' + b + '|' + h;
         let sec = frameSecMap.get(key);
         if (!sec) {
-          const name = 'RECT_' + (b * 100).toFixed(0) + 'x' + (h * 100).toFixed(0);
-          sec = { name, mat: material.name, b, h, A: b * h, Ix: (b * Math.pow(h, 3)) / 12, Iy: (h * Math.pow(b, 3)) / 12 };
+          const name = 'RECT_' + (b * 100).toFixed(0) + 'x' + (h * 100).toFixed(0) + '_' + matName;
+          sec = { name, mat: matName, b, h, A: b * h, Ix: (b * Math.pow(h, 3)) / 12, Iy: (h * Math.pow(b, 3)) / 12 };
           frameSecMap.set(key, sec);
           frameSections.push(sec);
         }
         f.secName = sec.name;
+        f.matName = matName;
       });
 
       const areaSections = [];
@@ -279,14 +312,17 @@
       areas.forEach(a => {
         const prop = areaProps[a.id] || {};
         const thickness = prop.thick ?? 0.25;
-        let sec = areaSecMap.get(thickness);
+        const matName = findMatName(a.origId ?? a.id);
+        const key = matName + '|' + thickness;
+        let sec = areaSecMap.get(key);
         if (!sec) {
-          const name = 'SHELL_' + thickness;
-          sec = { name, mat: material.name, thickness };
-          areaSecMap.set(thickness, sec);
+          const name = 'SHELL_' + thickness + '_' + matName;
+          sec = { name, mat: matName, thickness };
+          areaSecMap.set(key, sec);
           areaSections.push(sec);
         }
         a.secName = sec.name;
+        a.matName = matName;
       });
 
       const nodeIds = new Set(nodes.map(n => n.id));
@@ -309,15 +345,22 @@
         const loadCode = Math.trunc(nums[1] || 0); // тип/код нагрузки (равномерная и т.п.)
         const dir = Math.trunc(nums[2] || 3);
         const sys = Math.trunc(nums[3] || 2);
-        const loadId = nums.length >= 5 ? Math.trunc(nums[4] || 0) : loadCode; // номер загружения (последнее число)
+        const valueRef = nums.length >= 5 ? Math.trunc(nums[nums.length - 2] || 0) : loadCode; // ссылка в Load Value (предпоследнее число)
+        const loadId = nums.length >= 5 ? Math.trunc(nums[nums.length - 1] || 0) : loadCode; // номер загружения (последнее число)
         loadIdsSeen.add(loadId);
         const valCandidate = nums[5];
-        // величина: сначала по номеру загружения, затем по коду нагрузки, затем явное поле
-        const value = loadVals[loadId] ?? loadVals[loadCode] ?? (Number.isFinite(valCandidate) ? valCandidate : 0);
+        // величина: по ссылке на Load Value, затем по номеру загружения/коду, затем явное поле
+        const value = loadVals[valueRef] ?? loadVals[loadId] ?? loadVals[loadCode] ?? (Number.isFinite(valCandidate) ? valCandidate : 0);
         const loadPat = getLoadName(loadId) || ('LC' + loadId);
 
         // Приоритет: area -> frame -> node (кроме loadId=0, оставляем узловым)
-        if (loadId !== 0 && areaIds.has(target)) {
+        if (nodeIds.has(target)) {
+          const jl = { joint: target, loadPat, f1: 0, f2: 0, f3: 0, m1: 0, m2: 0, m3: 0 };
+          if (dir === 1) jl.f1 = value;
+          else if (dir === 2) jl.f2 = value;
+          else jl.f3 = value;
+          jointLoads.push(jl);
+        } else if (loadId !== 0 && areaIds.has(target)) {
           const dirStr = dir === 3 ? 'Gravity' : (sys === 1 ? String(dir) : dir === 1 ? 'GX' : dir === 2 ? 'GY' : 'GZ');
           const newId = areaIdMap.get(target) || target;
           areaLoads.push({ area: newId, loadPat, dir: dirStr, val: value });
@@ -333,12 +376,6 @@
             val1: value,
             val2: value
           });
-        } else if (nodeIds.has(target)) {
-          const jl = { joint: target, loadPat, f1: 0, f2: 0, f3: 0, m1: 0, m2: 0, m3: 0 };
-          if (dir === 1) jl.f1 = value;
-          else if (dir === 2) jl.f2 = value;
-          else jl.f3 = value;
-          jointLoads.push(jl);
         }
       });
 
@@ -636,12 +673,24 @@
     document.getElementById('loadFileBtn').onclick = () => {
       const fi = document.getElementById('fileInput');
       if (!fi.files.length) { setStatus('Файл не выбран'); return; }
+      const decoderUtf8 = new TextDecoder('utf-8');
+      const decoderCp1251 = new TextDecoder('windows-1251');
+      const chooseBestText = (buf) => {
+        const utf8 = decoderUtf8.decode(buf);
+        const cp = decoderCp1251.decode(buf);
+        const badChar = '\uFFFD';
+        const utf8Bad = (utf8.match(new RegExp(badChar, 'g')) || []).length;
+        const cpBad = (cp.match(new RegExp(badChar, 'g')) || []).length;
+        return cpBad < utf8Bad ? cp : utf8;
+      };
       const reader = new FileReader();
       reader.onload = e => {
-        document.getElementById('input').value = e.target.result;
+        const buf = e.target.result;
+        const txt = buf instanceof ArrayBuffer ? chooseBestText(buf) : String(buf || '');
+        document.getElementById('input').value = txt;
         setStatus('Файл загружен во входное поле.');
       };
-      reader.readAsText(fi.files[0]);
+      reader.readAsArrayBuffer(fi.files[0]);
     };
 
     document.getElementById('downloadBtn').onclick = () => {
