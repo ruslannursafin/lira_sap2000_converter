@@ -125,9 +125,11 @@
         const translitName = translit(rawName);
         const cleaned = translitName.replace(/[^A-Za-z0-9_]+/g, '');
         if (!cleaned) return; // совсем пустые пропускаем
-        const hasLetters = /[A-Za-z]/.test(cleaned);
-        const hasDigits = /\d/.test(cleaned);
-        const name = (hasLetters || hasDigits) ? cleaned : ('LC' + id);
+        // Сохраняем цифры как есть; если имя начинается с цифры, добавляем префикс LC
+        let name = cleaned;
+        if (/^\d/.test(name)) name = 'LC' + name;
+        // Если после очистки осталось слишком мало, используем LC с номером
+        if (name.length < 2) name = 'LC' + id;
         map[id] = name;
         const isDead = /dead/i.test(translitName) || /nagruzka|ves|sdead/i.test(translitName);
         patterns.push({ id, name, type: isDead ? 'Dead' : 'Other', selfWt: isDead ? 1 : 0 });
