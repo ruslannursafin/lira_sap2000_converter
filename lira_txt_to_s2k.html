@@ -124,8 +124,10 @@
         rawName = rawName.replace(/^\d+\s*\.\s*/, '');
         const translitName = translit(rawName);
         const cleaned = translitName.replace(/[^A-Za-z0-9_]+/g, '');
-        if (!cleaned || !/[A-Za-z]/.test(cleaned)) return; // пропускаем чисто цифровые/пустые
-        const name = cleaned;
+        if (!cleaned) return; // совсем пустые пропускаем
+        const hasLetters = /[A-Za-z]/.test(cleaned);
+        const hasDigits = /\d/.test(cleaned);
+        const name = (hasLetters || hasDigits) ? cleaned : ('LC' + id);
         map[id] = name;
         const isDead = /dead/i.test(translitName) || /nagruzka|ves|sdead/i.test(translitName);
         patterns.push({ id, name, type: isDead ? 'Dead' : 'Other', selfWt: isDead ? 1 : 0 });
